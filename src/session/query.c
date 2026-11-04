@@ -166,12 +166,17 @@ static z_result_t _z_trigger_query_reply_partial_inner(_z_session_t *zn, const _
             _Z_DEBUG("stored reply for id=%jd consolidation=%d", (intmax_t)id, pen_qry->_consolidation);
         }
     }
+    // The lease task may drop the query on timeout as soon as the lock is
+    // released, so nothing of pen_qry may be read past this point.
+    z_consolidation_mode_t consolidation = pen_qry->_consolidation;
+    _z_closure_reply_callback_t callback = pen_qry->_callback;
+    void *arg = pen_qry->_arg;
     _z_session_mutex_unlock(zn);
 
     // Trigger callback if applicable
-    if (pen_qry->_consolidation != Z_CONSOLIDATION_MODE_LATEST) {
+    if (consolidation != Z_CONSOLIDATION_MODE_LATEST) {
         _Z_DEBUG("immediate callback for id=%jd", (intmax_t)id);
-        pen_qry->_callback(&reply, pen_qry->_arg);
+        callback(&reply, arg);
     }
     _z_reply_clear(&reply);
     return _Z_RES_OK;
@@ -197,17 +202,21 @@ z_result_t _z_trigger_query_reply_err(_z_session_t *zn, _z_zint_t id, _z_msg_err
     _Z_CLEAN_RETURN_IF_ERR(_z_session_mutex_lock_if_open(zn), _z_bytes_drop(&msg->_payload);
                            _z_encoding_clear(&msg->_encoding));
     _z_pending_query_t *pen_qry = _z_unsafe_get_pending_query_by_id(zn, id);
-    _z_session_mutex_unlock(zn);
     if (pen_qry == NULL) {
+        _z_session_mutex_unlock(zn);
         // Not concerned by the reply
         _z_bytes_drop(&msg->_payload);
         _z_encoding_clear(&msg->_encoding);
         return _Z_RES_OK;
     }
+    // As in the partial reply: the query may be dropped once unlocked.
+    _z_closure_reply_callback_t callback = pen_qry->_callback;
+    void *arg = pen_qry->_arg;
+    _z_session_mutex_unlock(zn);
     // Trigger the user callback
     _z_reply_t reply;
     _z_reply_err_steal_data(&reply, &msg->_payload, &msg->_encoding, *replier_id);
-    pen_qry->_callback(&reply, pen_qry->_arg);
+    callback(&reply, arg);
     _z_reply_clear(&reply);
     return _Z_RES_OK;
 }
