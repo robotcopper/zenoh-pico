@@ -35,7 +35,15 @@
 #include "lwip/pbuf.h"
 #include "lwip/sockets.h"
 #include "lwip/udp.h"
+// The CYW43 is only present on the Pico W; without it, lwIP runs on whatever
+// netif the application registered as the default one.
+#if __has_include("pico/cyw43_arch.h")
 #include "pico/cyw43_arch.h"
+#define ZP_PICO_HAS_CYW43 1
+#else
+#include "lwip/netif.h"
+#define ZP_PICO_HAS_CYW43 0
+#endif
 
 z_result_t _z_socket_set_non_blocking(const _z_sys_net_socket_t *sock) {
     int flags = lwip_fcntl(sock->_fd, F_GETFL, 0);
@@ -441,8 +449,12 @@ size_t _z_send_udp_unicast(const _z_sys_net_socket_t sock, const uint8_t *ptr, s
 long unsigned int __get_ip_from_iface(const char *iface, int sa_family, struct sockaddr **lsockaddr) {
     unsigned int addrlen = 0U;
 
+#if ZP_PICO_HAS_CYW43
     struct netif *netif = &cyw43_state.netif[CYW43_ITF_STA];
-    if (netif_is_up(netif)) {
+#else
+    struct netif *netif = netif_default;
+#endif
+    if (netif != NULL && netif_is_up(netif)) {
         struct sockaddr_in *lsockaddr_in = (struct sockaddr_in *)z_malloc(sizeof(struct sockaddr_in));
         if (lsockaddr != NULL) {
             (void)memset(lsockaddr_in, 0, sizeof(struct sockaddr_in));
