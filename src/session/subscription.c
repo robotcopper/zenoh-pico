@@ -17,6 +17,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "zenoh-pico/session/subscription_timing.h"
+
 #include "zenoh-pico/api/constants.h"
 #include "zenoh-pico/api/types.h"
 #include "zenoh-pico/config.h"
@@ -34,6 +36,10 @@
 #if Z_FEATURE_SUBSCRIPTION == 1
 
 #define _Z_SUBINFOS_VEC_SIZE 4  // Arbitrary initial size
+
+volatile _z_subscription_timing_t _z_subscription_timing;
+
+__attribute__((weak)) uint32_t _z_subscription_clock_us(void) { return 0; }
 
 void _z_unsafe_subscription_cache_invalidate(_z_session_t *zn) {
 #if Z_FEATURE_RX_CACHE == 1
@@ -268,10 +274,12 @@ z_result_t _z_trigger_subscriptions_impl(_z_session_t *zn, _z_subscriber_kind_t 
                                          const _z_timestamp_t *timestamp, const _z_n_qos_t qos, _z_bytes_t *attachment,
                                          z_reliability_t reliability, _z_source_info_t *source_info,
                                          _z_transport_peer_common_t *peer) {
+    uint32_t lookup_start_us = _z_subscription_clock_us();
     _z_subscription_cache_data_t sub_infos = _z_subscription_cache_data_null();
     _Z_CLEAN_RETURN_IF_ERR(_z_subscription_get_infos(zn, sub_kind, &sub_infos, wireexpr, peer),
                            _z_wireexpr_clear(wireexpr);
                            _z_encoding_clear(encoding); _z_bytes_drop(payload); _z_bytes_drop(attachment););
+    uint32_t lookup_us = _z_subscription_clock_us() - lookup_start_us;
     const _z_subscription_rc_svec_t *subs = _Z_RC_IN_VAL(&sub_infos.infos);
     size_t sub_nb = _z_subscription_rc_svec_len(subs);
     _Z_DEBUG("Triggering %ju subs for key %.*s", (uintmax_t)sub_nb, (int)_z_string_len(&sub_infos.ke._keyexpr),
@@ -303,7 +311,16 @@ z_result_t _z_trigger_subscriptions_impl(_z_session_t *zn, _z_subscriber_kind_t 
     }
     _z_wireexpr_clear(wireexpr);
     _z_sample_clear(&sample);
+    uint32_t release_start_us = _z_subscription_clock_us();
     _z_subscription_cache_data_clear(&sub_infos);
+    if (sub_kind == _Z_SUBSCRIBER_KIND_SUBSCRIBER) {
+        uint32_t spent_us = lookup_us + (_z_subscription_clock_us() - release_start_us);
+        _z_subscription_timing.sum_us += spent_us;
+        if (spent_us > _z_subscription_timing.max_us) {
+            _z_subscription_timing.max_us = spent_us;
+        }
+        ++_z_subscription_timing.count;
+    }
     return ret;
 }
 
